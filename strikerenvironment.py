@@ -11,18 +11,18 @@ class StrikerEnv(gym.Env):
         self.pitchheight = 6.0
         #added below constants to support robot complexity
         self.wheelseparation = 0.52
-        self.maxlinearvelocity = 3.0
-        self.maxangularvelocity = 3.0
+        self.maxlinearvelocity = 1.2 #was moving too fast played with the values here lol
+        self.maxangularvelocity = 2.0
         #Wheel actions = [left wheel torque, right wheel torque]
         self.action_space = spaces.Box(
             low=np.array([-1.0, -1.0], dtype=np.float32),
             high=np.array([1.0, 1.0], dtype=np.float32),
             dtype=np.float32
         )
-        self.observation_space = spaces.Box(         #my base of observations[distance_to_ball, angle_to_ball,distance_to_goal, angle_to_goal, striker_velocity, striker_angular_velocity]
+        self.observation_space = spaces.Box(         #observing the sensors in based space for [distance_to_ball, angle_to_ball,distance_to_goal, angle_to_goal,distance_to_defender, angle_to_defender, striker_velocity, striker_angularvelocity]
             low=-np.inf,
             high=np.inf,
-            shape=(6,),
+            shape=(8,),
             dtype=np.float32
         )
         self.dt = 0.1
@@ -45,7 +45,9 @@ class StrikerEnv(gym.Env):
 
         self.ballposition = np.array([5.0, 3.0], dtype=np.float32) #ball position at the starting state
         self.goalposition = np.array([9.5, 3.0], dtype=np.float32) #goal position at starting state
-
+        self.defenderposition = np.array([8.4, 3.0], dtype=np.float32)  #defender starting position
+        self.defenderangle = np.pi / 2  #defender starts facing vertically
+        self.defenderdirection = 1  #used to move defender up and down
         self.previousdistancetoball = self.distance( #for reward/RL memory
             self.strikerposition,
             self.ballposition
@@ -81,7 +83,8 @@ class StrikerEnv(gym.Env):
 
         self.strikerposition += direction * forwardspeed * self.dt           #this updates the strikers direction
         if self.distance(self.strikerposition, self.ballposition) < 0.35:    #for if ball collides
-            self.ballposition += direction * 0.25
+            self.ballposition += direction * 0.12 #<<< swapped from .25 to half that as it wasnt realistic to hit ball with that power with the defender goalie there
+        self.updatedefender()
 
         reward = self.calculatereward()
         terminated = False
@@ -94,12 +97,19 @@ class StrikerEnv(gym.Env):
         if self.outofbounds():
             reward -= 10
             terminated = True
-        # Episode timeout
+        if self.defendercollision():
+            reward -= 10
+            terminated = True
+        #set for timeout
         if self.steps >= self.maxsteps:
             truncated = True
 
         sensorvector = self.getsensorvalues()
-        info = {}
+        info = {
+            "goalscored": self.goalscored(),
+            "defendercollision": self.defendercollision(),
+            "steps": self.steps
+        }
         return sensorvector, reward, terminated, truncated, info
 
     def getsensorvalues(self):
@@ -110,16 +120,21 @@ class StrikerEnv(gym.Env):
         distance_to_goal, angle_to_goal = self.relativeinfo(
             self.goalposition
         )
+        distance_to_defender, angle_to_defender = self.relativeinfo(
+            self.defenderposition
+        )
         sensorvector = np.array([
             distance_to_ball,
             angle_to_ball,
             distance_to_goal,
             angle_to_goal,
+            distance_to_defender,
+            angle_to_defender,
             self.strikervelocity,
             self.strikerangularvelocity
         ], dtype=np.float32)
-        return sensorvector
 
+        return sensorvector
     def calculatereward(self):
         reward = 0.0
         currentdistancetoball = self.distance(
@@ -161,6 +176,15 @@ class StrikerEnv(gym.Env):
     def distance(self, position1, position2):
         return np.linalg.norm(position1 - position2)
 
+    def updatedefender(self):
+        self.defenderposition[1] += self.defenderdirection * 0.03
+        if self.defenderposition[1] > 4.6:
+            self.defenderdirection = -1
+            self.defenderangle = -np.pi / 2
+
+        if self.defenderposition[1] < 1.4:
+            self.defenderdirection = 1
+            self.defenderangle = np.pi / 2
     def goalscored(self):
         return (
                 self.ballposition[0] >= 9.3
@@ -168,6 +192,13 @@ class StrikerEnv(gym.Env):
                 2.4 <= self.ballposition[1] <= 3.6
         )
 
+    def defendercollision(self):
+        return (
+                self.distance(
+                    self.strikerposition,
+                    self.defenderposition
+                ) < 0.55
+        )
     def outofbounds(self):
         return (
                 self.strikerposition[0] < 0
@@ -180,6 +211,77 @@ class StrikerEnv(gym.Env):
         )
 
     ##RENDERING PYGAME ANIMATION FOR THE GAME
+    #Creating a method to drawrobot first, then rendering
+    def drawrobot(self, robotposition, robotangle, bodycolour, markercolour):
+        robotx = int(robotposition[
+                         0] * self.renderscalefactor)  # applying my scale factor to make values rendering friendly
+
+        roboty = int(robotposition[
+                         1] * self.renderscalefactor)  # applying my scale factor to make values rendering friendly
+        robotlength = 50
+        robotwidth = 34
+        wheelwidth = 8
+        wheellength = 28
+
+        cosangle = np.cos(robotangle)
+        sinangle = np.sin(robotangle)
+
+        forwardvector = np.array([cosangle, sinangle])
+        sidevector = np.array([-sinangle, cosangle])
+        robotcenter = np.array([robotx, roboty])
+        frontcenter = robotcenter + forwardvector * (robotlength / 2)
+        backcenter = robotcenter - forwardvector * (robotlength / 2)
+        frontleft = frontcenter + sidevector * (robotwidth / 2)
+        frontright = frontcenter - sidevector * (robotwidth / 2)
+        backleft = backcenter + sidevector * (robotwidth / 2)
+        backright = backcenter - sidevector * (robotwidth / 2)
+        robotpoints = [
+            frontleft,
+            frontright,
+            backright,
+            backleft
+        ]
+        robotpoints = [(int(point[0]), int(point[1])) for point in robotpoints]
+        pygame.draw.polygon(  # body
+            self.window,
+            bodycolour,
+            robotpoints
+        )
+        pygame.draw.polygon(  # outline
+            self.window,
+            (0, 0, 0),
+            robotpoints,
+            3
+        )
+        leftwheelcenter = robotcenter + sidevector * ((robotwidth / 2) + 6)
+        rightwheelcenter = robotcenter - sidevector * ((robotwidth / 2) + 6)
+        def drawwheel(wheelcenter):  # drawing robot wheels
+            wheelfront = wheelcenter + forwardvector * (wheellength / 2)
+            wheelback = wheelcenter - forwardvector * (wheellength / 2)
+            wheelfrontleft = wheelfront + sidevector * (wheelwidth / 2)
+            wheelfrontright = wheelfront - sidevector * (wheelwidth / 2)
+            wheelbackleft = wheelback + sidevector * (wheelwidth / 2)
+            wheelbackright = wheelback - sidevector * (wheelwidth / 2)
+            wheelpoints = [
+                wheelfrontleft,
+                wheelfrontright,
+                wheelbackright,
+                wheelbackleft
+            ]
+            wheelpoints = [(int(point[0]), int(point[1])) for point in wheelpoints]
+            pygame.draw.polygon(
+                self.window,
+                (40, 40, 40),
+                wheelpoints
+            )
+        drawwheel(leftwheelcenter)
+        drawwheel(rightwheelcenter)
+        pygame.draw.circle(  #front striker marker
+            self.window,
+            markercolour,
+            (int(frontcenter[0]), int(frontcenter[1])),
+            5
+        )
     def render(self):
         if self.window is None:
             pygame.init()
@@ -277,83 +379,18 @@ class StrikerEnv(gym.Env):
             (ballx, bally),
             10
         )
-
-#DRAWING STRIKER
-        robotlength = 50
-        robotwidth = 34
-        wheelwidth = 8
-        wheellength = 28
-
-        cosangle = np.cos(self.strikerangle)
-        sinangle = np.sin(self.strikerangle)
-        forwardvector = np.array([cosangle, sinangle])
-        sidevector = np.array([-sinangle, cosangle])
-
-        robotcenter = np.array([strikerx, strikery])
-        frontcenter = robotcenter + forwardvector * (robotlength / 2)
-        backcenter = robotcenter - forwardvector * (robotlength / 2)
-        frontleft = frontcenter + sidevector * (robotwidth / 2)
-        frontright = frontcenter - sidevector * (robotwidth / 2)
-        backleft = backcenter + sidevector * (robotwidth / 2)
-        backright = backcenter - sidevector * (robotwidth / 2)
-        robotpoints = [
-            frontleft,
-            frontright,
-            backright,
-            backleft
-        ]
-        robotpoints = [(int(point[0]), int(point[1])) for point in robotpoints]
-        pygame.draw.polygon(  #body
-            self.window,
+        self.drawrobot(  #drawing defender robot
+            self.defenderposition,
+            self.defenderangle,
+            (200, 0, 0),
+            (255, 255, 255)
+        )
+        self.drawrobot( #drawing striker robot
+            self.strikerposition,
+            self.strikerangle,
             (0, 0, 255),
-            robotpoints
-        )
-
-        pygame.draw.polygon(  #outline
-            self.window,
-            (0, 0, 0),
-            robotpoints,
-            3
-        )
-
-        leftwheelcenter = robotcenter + sidevector * ((robotwidth / 2) + 6)
-        rightwheelcenter = robotcenter - sidevector * ((robotwidth / 2) + 6)
-        def drawwheel(wheelcenter):  # drawing robot wheels
-            wheelfront = wheelcenter + forwardvector * (wheellength / 2)
-            wheelback = wheelcenter - forwardvector * (wheellength / 2)
-            wheelfrontleft = wheelfront + sidevector * (wheelwidth / 2)
-            wheelfrontright = wheelfront - sidevector * (wheelwidth / 2)
-            wheelbackleft = wheelback + sidevector * (wheelwidth / 2)
-            wheelbackright = wheelback - sidevector * (wheelwidth / 2)
-            wheelpoints = [
-                wheelfrontleft,
-                wheelfrontright,
-                wheelbackright,
-                wheelbackleft
-            ]
-            wheelpoints = [(int(point[0]), int(point[1])) for point in wheelpoints]
-            pygame.draw.polygon(
-                self.window,
-                (40, 40, 40),
-                wheelpoints
+            (255, 0, 0)
             )
-        drawwheel(leftwheelcenter)
-        drawwheel(rightwheelcenter)
-        pygame.draw.circle(  #front striker marker
-            self.window,
-            (255, 0, 0),
-            (int(frontcenter[0]), int(frontcenter[1])),
-            5
-        )
-        directionx = strikerx + int(np.cos(self.strikerangle) * 25) #striker direction lines drawing
-        directiony = strikery + int(np.sin(self.strikerangle) * 25)
-        pygame.draw.line(
-            self.window,
-            (255, 0, 0),
-            (strikerx, strikery),
-            (directionx, directiony),
-            3
-        )
         pygame.display.flip()
         self.clock.tick(30)
 
