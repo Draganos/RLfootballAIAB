@@ -1,10 +1,9 @@
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from stable_baselines3.common.env_checker import check_env
 from strikerenvironment import StrikerEnv
 environment = StrikerEnv()
-check_env(environment) #checking that my custom environment follows gymnasium structure
-
-model = PPO(
+check_env(environment) #for gymnasium
+model = SAC(
     "MlpPolicy",
     environment,
     policy_kwargs=dict(
@@ -12,7 +11,13 @@ model = PPO(
     ),
     verbose=1
 )
-model.learn(total_timesteps=150000)
-model.save("ppo_striker_model")
+
+model.learn(
+    total_timesteps=50000
+)
+
+model.save("sac_striker_model")
+
 environment.close()
-print("PPO training completed, model updated/saved")
+
+print("SAC training completed and model saved")

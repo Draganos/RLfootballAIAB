@@ -38,14 +38,23 @@ class StrikerEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.steps = 0
-        self.strikerposition = np.array([1.0, 3.0], dtype=np.float32)
+        self.strikerposition = np.array([ #at the start of the game
+            self.np_random.uniform(0.5, 3.0),
+            self.np_random.uniform(1.0, 5.0)
+        ], dtype=np.float32)
+        self.ballposition = np.array([ #starting the game position for ball
+            self.np_random.uniform(3.0, 6.0),
+            self.np_random.uniform(1.5, 4.5)
+        ], dtype=np.float32)
         self.strikerangle = 0.0
         self.strikervelocity = 0.0
         self.strikerangularvelocity = 0.0
 
-        self.ballposition = np.array([5.0, 3.0], dtype=np.float32) #ball position at the starting state
         self.goalposition = np.array([9.5, 3.0], dtype=np.float32) #goal position at starting state
-        self.defenderposition = np.array([8.4, 3.0], dtype=np.float32)  #defender starting position
+        self.defenderposition = np.array([
+            8.5,
+            np.random.uniform(2.0, 4.0)
+        ], dtype=np.float32)  #defender starting position
         self.defenderangle = np.pi / 2  #defender starts facing vertically
         self.defenderdirection = 1  #used to move defender up and down
         self.previousdistancetoball = self.distance( #for reward/RL memory
@@ -80,13 +89,24 @@ class StrikerEnv(gym.Env):
             np.cos(self.strikerangle),
             np.sin(self.strikerangle)
         ], dtype=np.float32)
+        reward = self.calculatereward() #CALCULATING MY REWARD FUNCTION
+
+        self.strikerposition = np.clip(  ##stopping the striker to not move thru the walls + terminating with outofbounds (using defensive programming here to avoid glitches)
+            self.strikerposition,
+            [0.0, 0.0],
+            [self.pitchwidth, self.pitchheight]
+        )
 
         self.strikerposition += direction * forwardspeed * self.dt           #this updates the strikers direction
         if self.distance(self.strikerposition, self.ballposition) < 0.35:    #for if ball collides
-            self.ballposition += direction * 0.12 #<<< swapped from .25 to half that as it wasnt realistic to hit ball with that power with the defender goalie there
+            self.ballposition += direction * 0.15 #<<< swapped from .25 as it wasnt realistic to hit ball with that power with the defender goalie there
+        if self.ballposition[0] < 0 or self.ballposition[0] > self.pitchwidth or self.ballposition[1] < 0 or self.ballposition[1] > self.pitchheight: ##FIX BALL GOING OUT OF BOUNDS
+            reward -= 10
+            terminated = True
+
+
         self.updatedefender()
 
-        reward = self.calculatereward()
         terminated = False
         truncated = False
 
@@ -98,8 +118,8 @@ class StrikerEnv(gym.Env):
             reward -= 10
             terminated = True
         if self.defendercollision():
-            reward -= 10
-            terminated = True
+            reward -= 5
+            #terminated = True ##<< hashed for now so the robot doesnt panic around the defender
         #set for timeout
         if self.steps >= self.maxsteps:
             truncated = True
@@ -154,6 +174,20 @@ class StrikerEnv(gym.Env):
                 - currentballtogoal
         )
         reward -= 0.01 #<< time penalty (kept minimal such that effect isnt drastic)
+        distance_to_ball, angle_to_ball = self.relativeinfo(
+            self.ballposition
+        )
+        reward += 0.02 * np.cos(angle_to_ball)  #reward for facing towards the ball
+        reward -= 0.005 * abs(self.strikerangularvelocity)  #penalty for  spinning too much
+        goalcentrey = 3.0
+
+        reward -= 0.02 * abs(
+            self.ballposition[1] - goalcentrey
+        )  # reward shaping for keeping the ball aligned with the center of the goal
+        if self.distance(self.ballposition, self.defenderposition) < 0.6: #penalty for when ball gets too close to defender
+            reward -= 0.05
+        if self.ballposition[0] > 7.0 and self.distance(self.ballposition, self.defenderposition) > 0.8: #reward to being aligned with goal space instead of just following the defender
+            reward += 0.05
         self.previousdistancetoball = currentdistancetoball
         self.previousballtogoal = currentballtogoal
         return float(reward)
@@ -177,7 +211,7 @@ class StrikerEnv(gym.Env):
         return np.linalg.norm(position1 - position2)
 
     def updatedefender(self):
-        self.defenderposition[1] += self.defenderdirection * 0.03
+        self.defenderposition[1] += self.defenderdirection * 0.03 #defender speed
         if self.defenderposition[1] > 4.6:
             self.defenderdirection = -1
             self.defenderangle = -np.pi / 2
@@ -185,11 +219,16 @@ class StrikerEnv(gym.Env):
         if self.defenderposition[1] < 1.4:
             self.defenderdirection = 1
             self.defenderangle = np.pi / 2
+        if self.distance(self.defenderposition, self.ballposition) < 0.45:
+            if self.defenderposition[1] >= self.ballposition[1]:
+                self.defenderposition[1] += 0.08
+            else:
+                self.defenderposition[1] -= 0.08
     def goalscored(self):
         return (
                 self.ballposition[0] >= 9.3
                 and
-                2.4 <= self.ballposition[1] <= 3.6
+                2.2 <= self.ballposition[1] <= 3.8 #used to set the opening on my pitch (set at 3.8-2.2 = 1.6)
         )
 
     def defendercollision(self):
@@ -197,7 +236,7 @@ class StrikerEnv(gym.Env):
                 self.distance(
                     self.strikerposition,
                     self.defenderposition
-                ) < 0.55
+                ) < 0.40 #the defenders collision radius
         )
     def outofbounds(self):
         return (
