@@ -1,11 +1,11 @@
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from strikerenvironment import StrikerEnv
 import numpy as np
 np.random.seed(64)
 
 environment = StrikerEnv()
 environment.reset(seed=64)
-model = PPO.load("ppo_striker_model")
+model = SAC.load("sac_striker_model")
 renders = 20
 successfulgoals = 0
 totalrewards = []
@@ -40,7 +40,7 @@ for episode in range(renders):
 
 
 successrate = successfulgoals / renders
-print("PPO Evaluation Results")
+print("SAC Evaluation Results")
 print("//// VV ////")
 print("Amount of Renders:", renders)
 print("Success rate:", successrate)

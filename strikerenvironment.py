@@ -53,8 +53,8 @@ class StrikerEnv(gym.Env):
         self.goalposition = np.array([9.5, 3.0], dtype=np.float32) #goal position at starting state
         self.defenderposition = np.array([
             8.5,
-            np.random.uniform(2.0, 4.0)
-        ], dtype=np.float32)  #defender starting position
+            self.np_random.uniform(2.0, 4.0)
+        ], dtype=np.float32)  # defender starting position
         self.defenderangle = np.pi / 2  #defender starts facing vertically
         self.defenderdirection = 1  #used to move defender up and down
         self.previousdistancetoball = self.distance( #for reward/RL memory
@@ -74,52 +74,53 @@ class StrikerEnv(gym.Env):
         leftwheel, rightwheel = np.clip(movementcontroller, -1.0, 1.0)
         leftspeed = leftwheel * self.maxlinearvelocity
         rightspeed = rightwheel * self.maxlinearvelocity
-        forwardspeed = (leftspeed + rightspeed) / 2.0                   #for differential drive calculations
-        turningspeed = (rightspeed - leftspeed) / self.wheelseparation  #for differential drive calculations
-        turningspeed = np.clip( #added turningspeed physics for striker agent
+        forwardspeed = (leftspeed + rightspeed) / 2.0  # for differential drive calculations
+        turningspeed = (rightspeed - leftspeed) / self.wheelseparation  # for differential drive calculations
+        turningspeed = np.clip(  # added turningspeed physics for striker agent
             turningspeed,
             -self.maxangularvelocity,
             self.maxangularvelocity
         )
         self.strikervelocity = forwardspeed
         self.strikerangularvelocity = turningspeed
-        self.strikerangle += turningspeed * self.dt #to change/update the strikers rotation
+        self.strikerangle += turningspeed * self.dt  # to change/update the strikers rotation
 
-        direction = np.array([ #direction for forward vector
+        direction = np.array([  # direction for forward vector
             np.cos(self.strikerangle),
             np.sin(self.strikerangle)
         ], dtype=np.float32)
-        reward = self.calculatereward() #CALCULATING MY REWARD FUNCTION
 
-        self.strikerposition = np.clip(  ##stopping the striker to not move thru the walls + terminating with outofbounds (using defensive programming here to avoid glitches)
+        self.strikerposition += direction * forwardspeed * self.dt  # this updates the strikers direction
+        self.strikerposition = np.clip(
+            ##stopping the striker to not move thru the walls + terminating with outofbounds (using defensive programming here to avoid glitches)
             self.strikerposition,
             [0.0, 0.0],
             [self.pitchwidth, self.pitchheight]
         )
 
-        self.strikerposition += direction * forwardspeed * self.dt           #this updates the strikers direction
-        if self.distance(self.strikerposition, self.ballposition) < 0.35:    #for if ball collides
-            self.ballposition += direction * 0.15 #<<< swapped from .25 as it wasnt realistic to hit ball with that power with the defender goalie there
-        if self.ballposition[0] < 0 or self.ballposition[0] > self.pitchwidth or self.ballposition[1] < 0 or self.ballposition[1] > self.pitchheight: ##FIX BALL GOING OUT OF BOUNDS
-            reward -= 10
-            terminated = True
-
+        if self.distance(self.strikerposition, self.ballposition) < 0.35:  # for if ball collides
+            self.ballposition += direction * 0.15  # <<< swapped from .25 as it wasnt realistic to hit ball with that power with the defender goalie there
 
         self.updatedefender()
 
+        reward = self.calculatereward()  # CALCULATING MY REWARD FUNCTION
         terminated = False
         truncated = False
 
-        #POINT ALLOCATIONS FOR RL
+        if self.balloutofbounds():  ##FIX BALL GOING OUT OF BOUNDS
+            reward -= 5  # out of bounds avoidance
+            terminated = True
+
+        # POINT ALLOCATIONS FOR RL
         if self.goalscored():
             reward += 100
             terminated = True
-        if self.outofbounds():
-            reward -= 10
-            terminated = True
+        #if self.outofbounds(): ##dead code
+            #reward -= 5
+            #terminated = True
         if self.defendercollision():
-            reward -= 5
-            #terminated = True ##<< hashed for now so the robot doesnt panic around the defender
+            reward -= 1
+            # terminated = True ##<< hashed for now so the robot doesnt panic around the defender
         #set for timeout
         if self.steps >= self.maxsteps:
             truncated = True
@@ -128,6 +129,7 @@ class StrikerEnv(gym.Env):
         info = {
             "goalscored": self.goalscored(),
             "defendercollision": self.defendercollision(),
+            "balloutofbounds": self.balloutofbounds(),
             "steps": self.steps
         }
         return sensorvector, reward, terminated, truncated, info
@@ -161,6 +163,7 @@ class StrikerEnv(gym.Env):
             self.strikerposition,
             self.ballposition
         )
+        reward -= 0.02 * currentdistancetoball  #penalty for being far away from the ball it needs to go towards it first
         currentballtogoal = self.distance(
             self.ballposition,
             self.goalposition
@@ -178,6 +181,9 @@ class StrikerEnv(gym.Env):
             self.ballposition
         )
         reward += 0.02 * np.cos(angle_to_ball)  #reward for facing towards the ball
+        if self.ballposition[0] > self.defenderposition[0]:  # reward for ball getting past the defender
+            reward += 0.03
+        # reward += 0.005 * self.ballposition[0] #hashed for now because it was rewarding right-side position too much // #code purpose #adding pressure for ball to move the position to the righter side by rewarding agent pushing towards right side
         reward -= 0.005 * abs(self.strikerangularvelocity)  #penalty for  spinning too much
         goalcentrey = 3.0
 
@@ -236,7 +242,18 @@ class StrikerEnv(gym.Env):
                 self.distance(
                     self.strikerposition,
                     self.defenderposition
-                ) < 0.40 #the defenders collision radius
+                ) < 0.38 #the defenders collision radius
+        )
+
+    def balloutofbounds(self):
+        return (
+                self.ballposition[0] < 0
+                or
+                self.ballposition[0] > self.pitchwidth
+                or
+                self.ballposition[1] < 0
+                or
+                self.ballposition[1] > self.pitchheight
         )
     def outofbounds(self):
         return (
